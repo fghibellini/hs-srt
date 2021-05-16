@@ -9,6 +9,7 @@ module Lib
     , Range
     , Line
     , parse
+    , parseBS
     , RawLine
     ) where
 
@@ -71,6 +72,7 @@ data LineParseError a
   | Err_04 -- expecting newline after timestamp line
   | Err_06 -- expecting digit in timestamp
   | Err_07 -- expecting ':' in timestamp
+  | Err_08 -- expecting ',' in timestamp
   deriving Show
 
 data RawLineParsingError
@@ -101,7 +103,7 @@ class SubRipContent a where
 instance SubRipContent RawLine where
   type ContentError RawLine = RawLineParsingError
   parseContent input = do
-      sepIndex <- unfold 0 \i ->
+      sepIndex <- flip unfold 0 \i ->
         case (i >= BS.length input, isSeparator input i) of
           (True, _) -> Left (Left (Err_03 RawErr_01))
           (False, True) -> Left (Right i)
@@ -115,8 +117,9 @@ instance SubRipContent RawLine where
       isLF bs i = bs !? i == Just 0x0A
       isCRLF bs i = (bs !? i == Just 0x0D) && (bs !? (i + 1) == Just 0x0A)
 
-unfold :: a -> (a -> Either b a) -> b
-unfold x f = either id (\y -> unfold y f) $ f x 
+-- same as `loop` from `extra`
+unfold :: (a -> Either b a) -> a -> b
+unfold f x = either id (unfold f) $ f x 
 
 parseIndex :: ByteString -> Either (LineParseError a) (Int, ByteString)
 parseIndex input =
@@ -166,7 +169,7 @@ parseChar :: Word8 -> ByteString -> Either SmallErr ((), ByteString)
 parseChar c input = maybe (Left Eof) (\x -> if x == c then Right ((), BS.drop 1 input) else Left UnexpectedInput) $ input !? 0
 
 parseFixedDigitNumber :: Int -> ByteString -> Either SmallErr (Int, ByteString)
-parseFixedDigitNumber n input = unfold 0 \i -> case i of
+parseFixedDigitNumber n input = flip unfold 0 \i -> case i of
        _ | i >= n -> Left(Right (digitsToInt (BS.take i input), BS.drop i input))
        _ -> case input !? i of
              Just x | isDigit x -> Right(i+1)
@@ -180,7 +183,7 @@ parseTimestamp input = do
   (ms, rest3) <- replaceError Err_06 $ parseFixedDigitNumber 2 rest2
   ((), rest4) <- replaceError Err_07 $ parseChar 58 rest3 -- ':'
   (ss, rest5) <- replaceError Err_06 $ parseFixedDigitNumber 2 rest4
-  ((), rest6) <- replaceError Err_07 $ parseChar 44 rest5 -- ','
+  ((), rest6) <- replaceError Err_08 $ parseChar 44 rest5 -- ','
   (mss, rest7) <- replaceError Err_06 $ parseFixedDigitNumber 3 rest6
   Right (Timestamp (hs * oneHour + ms * oneMinute + ss * oneSecond + mss), rest7)
 
@@ -188,11 +191,22 @@ parse :: SubRipContent a => Show (ContentError a) => FilePath -> IO (SubRip a)
 parse f = do
   contents <- BS.drop 3 <$> BS.readFile f -- dropping BOM
   let res =
-        unfold (contents,[]) \(c,ls) -> case parseLine c of
+        flip unfold (contents,[]) \(c,ls) -> case parseLine c of
           Left e -> Left (Left e)
           Right (l, "") -> Left (Right (ls <> [l])) -- TODO append on list :(
           Right (l, r) -> Right (r, ls <> [l]) -- TODO append on list :(
   case res of
     Right lines -> pure $ SubRip lines
     Left err -> error ("Parse error: " <> show err)
+
+parseBS :: SubRipContent a => Show (ContentError a) => ByteString -> Either (LineParseError (ContentError a)) (SubRip a)
+parseBS input = do
+  let res =
+        flip unfold (input,[]) \(c,ls) -> case parseLine c of
+          Left e -> Left (Left e)
+          Right (l, "") -> Left (Right (ls <> [l])) -- TODO append on list :(
+          Right (l, r) -> Right (r, ls <> [l]) -- TODO append on list :(
+  case res of
+    Right lines -> Right $ SubRip lines
+    Left err -> Left err
 
