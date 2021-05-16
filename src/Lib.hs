@@ -74,8 +74,8 @@ data LineParseError a
   deriving Show
 
 data RawLineParsingError
-  = RawErr_01
-  | RawErr_02
+  = RawErr_01 -- expecting double newline after content
+  | RawErr_02 -- this error should never happen (we consume two newlines, but we know they're there since that's why we stoped consuming content data)
   deriving Show
 
 parseLine :: SubRipContent a => ByteString -> Either (LineParseError (ContentError a)) (Line a, ByteString)
@@ -107,8 +107,8 @@ instance SubRipContent RawLine where
           (False, True) -> Left (Right i)
           (False, False) -> Right (i + 1)
       let (contents, rest1) = BS.splitAt sepIndex input
-      ((), rest2) <- replaceError (Err_03 RawErr_01) $ parseNewLine rest1
-      ((), rest3) <- replaceError (Err_03 RawErr_01) $ parseNewLine rest2
+      ((), rest2) <- replaceError (Err_03 RawErr_02) $ parseNewLine rest1
+      ((), rest3) <- replaceError (Err_03 RawErr_02) $ parseNewLine rest2
       pure (RawLine contents, rest3)
     where
       isSeparator bs i = (isLF bs i && isLF bs (i + 1)) || (isLF bs i && isCRLF bs (i + 1)) || (isCRLF bs i && isLF bs (i + 2)) || (isCRLF bs i && isCRLF bs (i + 2))
