@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Lib
     ( SubRip
@@ -62,17 +64,21 @@ instance Show a => Show (Line a) where
     , show $ contents line
     ]
 
-data LineParseError
+data LineParseError a
   = Err_01 -- expected " --> " between timestamps
   | Err_02 -- expecting newline after index
-  | Err_03
+  | Err_03 a
   | Err_04 -- expecting newline after timestamp line
-  | Err_05
   | Err_06 -- expecting digit in timestamp
   | Err_07 -- expecting ':' in timestamp
   deriving Show
 
-parseLine :: SubRipContent a => ByteString -> Either LineParseError (Line a, ByteString)
+data RawLineParsingError
+  = RawErr_01
+  | RawErr_02
+  deriving Show
+
+parseLine :: SubRipContent a => ByteString -> Either (LineParseError (ContentError a)) (Line a, ByteString)
 parseLine input = do
   (index, rest0) <- parseIndex input
   (range, rest1) <- parseRange rest0
@@ -89,18 +95,20 @@ newtype RawLine = RawLine ByteString
   deriving Show
 
 class SubRipContent a where
-  parseContent :: ByteString -> Either LineParseError (a, ByteString)
+  type ContentError a :: *
+  parseContent :: ByteString -> Either (LineParseError (ContentError a)) (a, ByteString)
 
 instance SubRipContent RawLine where
+  type ContentError RawLine = RawLineParsingError
   parseContent input = do
       sepIndex <- unfold 0 \i ->
         case (i >= BS.length input, isSeparator input i) of
-          (True, _) -> Left (Left Err_03)
+          (True, _) -> Left (Left (Err_03 RawErr_01))
           (False, True) -> Left (Right i)
           (False, False) -> Right (i + 1)
       let (contents, rest1) = BS.splitAt sepIndex input
-      ((), rest2) <- replaceError Err_05 $ parseNewLine rest1
-      ((), rest3) <- replaceError Err_05 $ parseNewLine rest2
+      ((), rest2) <- replaceError (Err_03 RawErr_01) $ parseNewLine rest1
+      ((), rest3) <- replaceError (Err_03 RawErr_01) $ parseNewLine rest2
       pure (RawLine contents, rest3)
     where
       isSeparator bs i = (isLF bs i && isLF bs (i + 1)) || (isLF bs i && isCRLF bs (i + 1)) || (isCRLF bs i && isLF bs (i + 2)) || (isCRLF bs i && isCRLF bs (i + 2))
@@ -110,7 +118,7 @@ instance SubRipContent RawLine where
 unfold :: a -> (a -> Either b a) -> b
 unfold x f = either id (\y -> unfold y f) $ f x 
 
-parseIndex :: ByteString -> Either LineParseError (Int, ByteString)
+parseIndex :: ByteString -> Either (LineParseError a) (Int, ByteString)
 parseIndex input =
   let
     (digits, rest) = BS.span isDigit input
@@ -133,7 +141,7 @@ parseNewLine input = case input of
    r | BS.isPrefixOf crlf r -> Right ((), BS.drop 2 input)
    r | otherwise -> Left ()
 
-parseRange :: ByteString -> Either LineParseError (Range, ByteString)
+parseRange :: ByteString -> Either (LineParseError a) (Range, ByteString)
 parseRange input = do
   (t0, rest0) <- parseTimestamp input
   case BS.splitAt 5 rest0 of
@@ -165,7 +173,7 @@ parseFixedDigitNumber n input = unfold 0 \i -> case i of
              Just x | otherwise -> Left (Left UnexpectedInput)
              Nothing -> Left (Left Eof)
 
-parseTimestamp :: ByteString -> Either LineParseError (Timestamp, ByteString)
+parseTimestamp :: ByteString -> Either (LineParseError a) (Timestamp, ByteString)
 parseTimestamp input = do
   (hs, rest1) <- replaceError Err_06 $ parseFixedDigitNumber 2 input
   ((), rest2) <- replaceError Err_07 $ parseChar 58 rest1 -- ':'
@@ -176,7 +184,7 @@ parseTimestamp input = do
   (mss, rest7) <- replaceError Err_06 $ parseFixedDigitNumber 3 rest6
   Right (Timestamp (hs * oneHour + ms * oneMinute + ss * oneSecond + mss), rest7)
 
-parse :: SubRipContent a => FilePath -> IO (SubRip a)
+parse :: SubRipContent a => Show (ContentError a) => FilePath -> IO (SubRip a)
 parse f = do
   contents <- BS.drop 3 <$> BS.readFile f -- dropping BOM
   let res =
