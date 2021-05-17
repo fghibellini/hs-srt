@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 9c8b3c04b280f9940f78846bf3d7e0d090dc8515d72eec175f0c87da513be1ad
+-- hash: 0153e1c8b35ea663a8984f5d26ba93eccf96ba81b9d98bff325341d7778d0d66
 
 name:           hs-srt
 version:        0.1.0.0
@@ -48,6 +48,8 @@ executable hs-srt-exe
   build-depends:
       base >=4.7 && <5
     , hs-srt
+    , tagsoup
+    , text
   default-language: Haskell2010
 
 test-suite hs-srt-test

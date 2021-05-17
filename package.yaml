@@ -38,6 +38,8 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - hs-srt
+    - tagsoup
+    - text
 
 tests:
   hs-srt-test:

@@ -10,7 +10,9 @@ module Lib
     , Line
     , parse
     , parseBS
-    , RawLine
+    , RawLine(..)
+    , Lib.lines
+    , contents
     ) where
 
 import qualified Data.ByteString as BS
@@ -20,7 +22,7 @@ import Data.Word8 (isDigit, isSpace)
 import Debug.Trace (traceShow, trace)
 import Data.Bifunctor (bimap)
 
-data SubRip a = SubRip [Line a]
+data SubRip a = SubRip { lines :: [Line a] }
   deriving Show
 
 newtype Timestamp = Timestamp Int
@@ -93,7 +95,7 @@ lf = "\x0A"
 crlf :: ByteString
 crlf = "\x0D\x0A"
 
-newtype RawLine = RawLine ByteString
+newtype RawLine = RawLine { unRawLine :: ByteString }
   deriving Show
 
 class SubRipContent a where
