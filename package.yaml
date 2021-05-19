@@ -27,6 +27,7 @@ library:
   dependencies:
   - bytestring
   - word8
+  - transformers
 
 executables:
   hs-srt-exe:

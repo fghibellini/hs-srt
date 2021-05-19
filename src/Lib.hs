@@ -2,6 +2,9 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 module Lib
     ( SubRip
@@ -20,7 +23,64 @@ import Data.ByteString (ByteString, (!?))
 import Data.Word (Word8)
 import Data.Word8 (isDigit, isSpace)
 import Debug.Trace (traceShow, trace)
-import Data.Bifunctor (bimap)
+import Data.Bifunctor (bimap, Bifunctor)
+import Data.Either (either)
+import Data.Void (Void, absurd)
+import Control.Monad.Trans.Except (ExceptT(..), throwE, runExceptT)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Fail (fail)
+import Data.Traversable (for)
+
+data ParserState
+  = ParserState
+  { position :: !Int -- current focus of the parser
+  , buffer :: !ByteString -- original input data
+  , len :: !Int -- length of buffer
+  }
+
+newtype Parser e a = Parser { unParser :: ParserState -> Either e (a, ParserState) }
+
+runParser :: Parser e a -> ByteString -> Either e a
+runParser (Parser p) input = fst <$> p (ParserState { position = 0, buffer = input, len = BS.length input })
+
+instance Functor (Parser e) where
+  -- fmap f (Parser p) = Parser ((fmap . fmap) f . p)
+  fmap f (Parser p) = Parser \s0 -> case p s0 of
+    Left e -> Left e
+    Right (x, s1) -> Right (f x, s1)
+
+instance Bifunctor Parser where
+  -- bimap f1 f2 (Parser p) = Parser (bimap f1 (fmap f2) . p)
+  bimap f1 f2 (Parser p) = Parser \s0 -> case p s0 of
+    Left e -> Left $ f1 e
+    Right (x,s1) -> Right (f2 x, s1)
+
+instance Applicative (Parser e) where
+  pure x = Parser \p -> Right (x, p)
+
+instance Monad (Parser e) where
+  Parser p1 >>= f = Parser \s0 ->
+    case p1 s0 of
+      Left e -> Left e
+      Right (x,s1) -> let Parser p2 = f x in p2 s1
+
+-- read character relative to focus (0 returns the focus)
+peekChar :: Int -> Parser e (Maybe Word8)
+peekChar i = Parser \p@ParserState { position, buffer } -> Right (buffer !? (position + i), p)
+
+-- read bytestring
+peekByteString :: Int -> Parser e ByteString
+peekByteString l = Parser \p@ParserState { position, buffer } -> Right (BS.take l $ BS.drop position buffer, p)
+
+-- shifts the focus by the passed amount (0 is a noop)
+moveFocus :: Int -> Parser e ()
+moveFocus n = Parser \p@ParserState { position } -> Right ((), p { position = position + n })
+
+failParse :: e -> Parser e a
+failParse e = Parser \_ -> Left e
+
+isDone :: Parser e Bool
+isDone = Parser \p@ParserState { position, len } -> Right (position >= len, p)
 
 data SubRip a = SubRip { lines :: [Line a] }
   deriving Show
@@ -82,12 +142,12 @@ data RawLineParsingError
   | RawErr_02 -- this error should never happen (we consume two newlines, but we know they're there since that's why we stoped consuming content data)
   deriving Show
 
-parseLine :: SubRipContent a => ByteString -> Either (LineParseError (ContentError a)) (Line a, ByteString)
-parseLine input = do
-  (index, rest0) <- parseIndex input
-  (range, rest1) <- parseRange rest0
-  (contts, rest2) <- parseContent rest1
-  pure (Line index range contts, rest2)
+parseLine :: SubRipContent a => Parser (LineParseError (ContentError a)) (Line a)
+parseLine = do
+  index <- parseIndex
+  range <- parseRange 
+  contts <- parseContent
+  pure $ Line index range contts
 
 lf :: ByteString
 lf = "\x0A"
@@ -100,115 +160,167 @@ newtype RawLine = RawLine { unRawLine :: ByteString }
 
 class SubRipContent a where
   type ContentError a :: *
-  parseContent :: ByteString -> Either (LineParseError (ContentError a)) (a, ByteString)
+  parseContent :: Parser (LineParseError (ContentError a)) a
 
 instance SubRipContent RawLine where
   type ContentError RawLine = RawLineParsingError
-  parseContent input = do
-      sepIndex <- flip unfold 0 \i ->
-        case (i >= BS.length input, isSeparator input i) of
-          (True, _) -> Left (Left (Err_03 RawErr_01))
-          (False, True) -> Left (Right i)
-          (False, False) -> Right (i + 1)
-      let (contents, rest1) = BS.splitAt sepIndex input
-      ((), rest2) <- replaceError (Err_03 RawErr_02) $ parseNewLine rest1
-      ((), rest3) <- replaceError (Err_03 RawErr_02) $ parseNewLine rest2
-      pure (RawLine contents, rest3)
+  parseContent = do
+      sepIndex <- flip loopM 0 \i -> do
+        r <- isSeparator i
+        case r of
+          True -> pure (Left i)
+          False -> pure (Right (i+1))
+      contents <- peekByteString sepIndex
+      moveFocus sepIndex
+      () <- replaceError (Err_03 RawErr_02) $ parseNewLine
+      () <- replaceError (Err_03 RawErr_02) $ parseNewLine
+      pure $ RawLine contents
     where
-      isSeparator bs i = (isLF bs i && isLF bs (i + 1)) || (isLF bs i && isCRLF bs (i + 1)) || (isCRLF bs i && isLF bs (i + 2)) || (isCRLF bs i && isCRLF bs (i + 2))
-      isLF bs i = bs !? i == Just 0x0A
-      isCRLF bs i = (bs !? i == Just 0x0D) && (bs !? (i + 1) == Just 0x0A)
+      isSeparator i = do 
+        r1 <- peekChar 0
+        r2 <- peekChar 1
+        r3 <- peekChar 2
+        r4 <- peekChar 3
+        pure $ case (r1,r2) of
+          (a,_) | isLF a -> case (r2,r3) of
+            (x,_) | isLF x -> True
+            (x,y) | isCR x && isLF y -> True
+            _ -> False
+          (a,b) | isCR a && isLF b -> case (r3,r4) of
+            (x,_) | isLF x -> True
+            (x,y) | isCR x && isLF y -> True
+            _ -> False
+      isLF i = i == Just 0x0A
+      isCR i = i == Just 0x0D
 
 -- same as `loop` from `extra`
 unfold :: (a -> Either b a) -> a -> b
 unfold f x = either id (unfold f) $ f x 
 
-parseIndex :: ByteString -> Either (LineParseError a) (Int, ByteString)
-parseIndex input =
-  let
-    (digits, rest) = BS.span isDigit input
-  in do
-    ((), rest1) <- replaceError Err_02 $ parseNewLine rest
-    pure (digitsToInt digits, rest1)
+parseSpan :: (Word8 -> Bool) -> Parser Void [Word8]
+parseSpan predicate = do
+  r <- peekChar 0
+  case r of
+    Just c | predicate c -> (c :) <$> (moveFocus 1 >> parseSpan predicate)
+    _ -> pure []
+
+parseIndex :: Parser (LineParseError a) Int
+parseIndex = do
+  digits <- mapError absurd $ parseSpan isDigit
+  replaceError Err_02 $ parseNewLine
+  pure $ digitsToInt digits
 
 
-digitsToInt :: ByteString -> Int
-digitsToInt = sum . zipWith (*) powersOfTen . reverse . fmap fromDigit . BS.unpack
+digitsToInt :: [Word8] -> Int
+digitsToInt = sum . zipWith (*) powersOfTen . reverse . fmap fromDigit
   where
     fromDigit :: Word8 -> Int
     fromDigit b = fromIntegral (b - 48)
     powersOfTen :: [Int]
     powersOfTen = iterate (*10) 1
 
-parseNewLine :: ByteString -> Either () ((), ByteString)
-parseNewLine input = case input of
-   r | BS.isPrefixOf lf r -> Right ((), BS.drop 1 input)
-   r | BS.isPrefixOf crlf r -> Right ((), BS.drop 2 input)
-   r | otherwise -> Left ()
+parseNewLine :: Parser () ()
+parseNewLine = do
+  c1 <- peekChar 0
+  case c1 of
+    Just 0x0A -> moveFocus 1
+    Just 0x0D -> do
+      c2 <- peekChar 1
+      case c2 of
+        Just 0x0A -> moveFocus 2
+        _ -> failParse ()
+    _ -> failParse ()
 
-parseRange :: ByteString -> Either (LineParseError a) (Range, ByteString)
-parseRange input = do
-  (t0, rest0) <- parseTimestamp input
-  case BS.splitAt 5 rest0 of
-    (" --> ", rest1) -> do
-      (t1, rest2) <- parseTimestamp rest1
-      ((), rest3) <- replaceError Err_04 $ parseNewLine rest2
-      pure (Range t0 t1, rest3)
-    (_, _) -> Left Err_01
+parseFixedBS :: ByteString -> Parser () ()
+parseFixedBS needle = do
+  cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..BS.length needle]
+  if Right needle == (BS.pack <$> cs)
+  then pure ()
+  else failParse ()
 
-replaceError :: e' -> Either e a -> Either e' a
+parseRange :: Parser (LineParseError a) Range
+parseRange = do
+  t0 <- parseTimestamp
+  () <- replaceError Err_01 $ parseFixedBS " --> "
+  t1 <- parseTimestamp
+  () <- replaceError Err_04 $ parseNewLine
+  pure $ Range t0 t1
+
+replaceError :: e' -> Parser e a -> Parser e' a
 replaceError e x = mapError (\_ -> e) x 
 
-mapError :: (e -> e') -> Either e a -> Either e' a
+mapError :: (e -> e') -> Parser e a -> Parser e' a
 mapError f x = bimap f id x
 
 data SmallErr = Eof | UnexpectedInput
 
-parseDigit :: ByteString -> Either SmallErr (Word8, ByteString)
-parseDigit input = maybe (Left Eof) (\x -> if isDigit x then Right (x, BS.drop 1 input) else Left UnexpectedInput) $ input !? 0
+parseChar :: Word8 -> Parser SmallErr ()
+parseChar x = do
+  c <- peekChar 0
+  if Just x == c 
+  then moveFocus 1
+  else failParse UnexpectedInput
+  
 
-parseChar :: Word8 -> ByteString -> Either SmallErr ((), ByteString)
-parseChar c input = maybe (Left Eof) (\x -> if x == c then Right ((), BS.drop 1 input) else Left UnexpectedInput) $ input !? 0
+eitherToParser :: Either e a -> Parser e a
+eitherToParser x = Parser \p -> (,p) <$> x
 
-parseFixedDigitNumber :: Int -> ByteString -> Either SmallErr (Int, ByteString)
-parseFixedDigitNumber n input = flip unfold 0 \i -> case i of
-       _ | i >= n -> Left(Right (digitsToInt (BS.take i input), BS.drop i input))
-       _ -> case input !? i of
-             Just x | isDigit x -> Right(i+1)
-             Just x | otherwise -> Left (Left UnexpectedInput)
-             Nothing -> Left (Left Eof)
+parseFixedDigitNumber :: Int -> Parser SmallErr Int
+parseFixedDigitNumber n = do
+    r <- parseDigits
+    case r of
+      Left e -> failParse e
+      Right digits -> do
+        moveFocus n
+        pure $ digitsToInt digits
+  where
+    parseDigits :: Parser a (Either SmallErr [Word8])
+    parseDigits = runExceptT $ for [0..n] \i -> lift (peekChar i) >>= \case 
+      (Just c) | isDigit c -> pure c
+      (Just c) | otherwise -> throwE UnexpectedInput
+      Nothing -> throwE Eof
 
-parseTimestamp :: ByteString -> Either (LineParseError a) (Timestamp, ByteString)
-parseTimestamp input = do
-  (hs, rest1) <- replaceError Err_06 $ parseFixedDigitNumber 2 input
-  ((), rest2) <- replaceError Err_07 $ parseChar 58 rest1 -- ':'
-  (ms, rest3) <- replaceError Err_06 $ parseFixedDigitNumber 2 rest2
-  ((), rest4) <- replaceError Err_07 $ parseChar 58 rest3 -- ':'
-  (ss, rest5) <- replaceError Err_06 $ parseFixedDigitNumber 2 rest4
-  ((), rest6) <- replaceError Err_08 $ parseChar 44 rest5 -- ','
-  (mss, rest7) <- replaceError Err_06 $ parseFixedDigitNumber 3 rest6
-  Right (Timestamp (hs * oneHour + ms * oneMinute + ss * oneSecond + mss), rest7)
+-- flip unfold 0 \i -> case i of
+--        _ | i >= n -> Left(Right (digitsToInt (BS.take i input), BS.drop i input))
+--        _ -> case input !? i of
+--              Just x | isDigit x -> Right(i+1)
+--              Just x | otherwise -> Left (Left UnexpectedInput)
+--              Nothing -> Left (Left Eof)
+
+parseTimestamp :: Parser (LineParseError a) Timestamp
+parseTimestamp = do
+  hs <- replaceError Err_06 $ parseFixedDigitNumber 2
+  () <- replaceError Err_07 $ parseChar 58 -- ':'
+  ms <- replaceError Err_06 $ parseFixedDigitNumber 2
+  () <- replaceError Err_07 $ parseChar 58 -- ':'
+  ss <- replaceError Err_06 $ parseFixedDigitNumber 2
+  () <- replaceError Err_08 $ parseChar 44 -- ','
+  mss <- replaceError Err_06 $ parseFixedDigitNumber 3
+  pure $ Timestamp (hs * oneHour + ms * oneMinute + ss * oneSecond + mss)
 
 parse :: SubRipContent a => Show (ContentError a) => FilePath -> IO (SubRip a)
 parse f = do
   contents <- BS.drop 3 <$> BS.readFile f -- dropping BOM
-  let res =
-        flip unfold (contents,[]) \(c,ls) -> case parseLine c of
-          Left e -> Left (Left e)
-          Right (l, "") -> Left (Right (ls <> [l])) -- TODO append on list :(
-          Right (l, r) -> Right (r, ls <> [l]) -- TODO append on list :(
-  case res of
-    Right lines -> pure $ SubRip lines
+  case parseBS contents of
+    Right subrip -> pure subrip
     Left err -> error ("Parse error: " <> show err)
 
 parseBS :: SubRipContent a => Show (ContentError a) => ByteString -> Either (LineParseError (ContentError a)) (SubRip a)
 parseBS input = do
-  let res =
-        flip unfold (input,[]) \(c,ls) -> case parseLine c of
-          Left e -> Left (Left e)
-          Right (l, "") -> Left (Right (ls <> [l])) -- TODO append on list :(
-          Right (l, r) -> Right (r, ls <> [l]) -- TODO append on list :(
-  case res of
+  let parseLines = do
+          l <- parseLine
+          done <- isDone
+          case done of
+            True -> pure [l]
+            False -> (l:) <$> parseLines
+  case runParser parseLines input of
     Right lines -> Right $ SubRip lines
     Left err -> Left err
 
+-- taken from https://hackage.haskell.org/package/extra-1.7.9/docs/src/Control.Monad.Extra.html#loopM
+loopM :: Monad m => (a -> m (Either a b)) -> a -> m b
+loopM act x = do
+    res <- act x
+    case res of
+        Left x -> loopM act x
+        Right v -> pure v
