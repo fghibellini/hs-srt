@@ -30,6 +30,7 @@ import Control.Monad.Trans.Except (ExceptT(..), throwE, runExceptT)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Fail (fail)
 import Data.Traversable (for)
+import Debug.Trace (traceShow)
 
 data ParserState
   = ParserState
@@ -78,6 +79,16 @@ moveFocus n = Parser \p@ParserState { position } -> Right ((), p { position = po
 
 failParse :: e -> Parser e a
 failParse e = Parser \_ -> Left e
+
+-- for debugging purposes only
+dumpState :: Parser e ()
+dumpState = Parser \s -> traceShow (renderState s) (Right ((), s))
+  where
+    renderState (ParserState { position, buffer }) = BS.take 20 $ BS.drop position buffer
+
+-- for debugging purposes only
+parserLog :: String -> Parser e ()
+parserLog msg = Parser \s -> trace msg (Right ((), s))
 
 isDone :: Parser e Bool
 isDone = Parser \p@ParserState { position, len } -> Right (position >= len, p)
@@ -168,8 +179,8 @@ instance SubRipContent RawLine where
       sepIndex <- flip loopM 0 \i -> do
         r <- isSeparator i
         case r of
-          True -> pure (Left i)
-          False -> pure (Right (i+1))
+          True -> pure (Right i)
+          False -> pure (Left (i+1))
       contents <- peekByteString sepIndex
       moveFocus sepIndex
       () <- replaceError (Err_03 RawErr_02) $ parseNewLine
@@ -177,10 +188,10 @@ instance SubRipContent RawLine where
       pure $ RawLine contents
     where
       isSeparator i = do 
-        r1 <- peekChar 0
-        r2 <- peekChar 1
-        r3 <- peekChar 2
-        r4 <- peekChar 3
+        r1 <- peekChar (i + 0)
+        r2 <- peekChar (i + 1)
+        r3 <- peekChar (i + 2)
+        r4 <- peekChar (i + 3)
         pure $ case (r1,r2) of
           (a,_) | isLF a -> case (r2,r3) of
             (x,_) | isLF x -> True
@@ -190,6 +201,7 @@ instance SubRipContent RawLine where
             (x,_) | isLF x -> True
             (x,y) | isCR x && isLF y -> True
             _ -> False
+          _ -> False
       isLF i = i == Just 0x0A
       isCR i = i == Just 0x0D
 
@@ -233,9 +245,10 @@ parseNewLine = do
 
 parseFixedBS :: ByteString -> Parser () ()
 parseFixedBS needle = do
-  cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..BS.length needle]
+  let len = BS.length needle
+  cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..(len - 1)]
   if Right needle == (BS.pack <$> cs)
-  then pure ()
+  then moveFocus len
   else failParse ()
 
 parseRange :: Parser (LineParseError a) Range
@@ -275,7 +288,7 @@ parseFixedDigitNumber n = do
         pure $ digitsToInt digits
   where
     parseDigits :: Parser a (Either SmallErr [Word8])
-    parseDigits = runExceptT $ for [0..n] \i -> lift (peekChar i) >>= \case 
+    parseDigits = runExceptT $ for [0..(n-1)] \i -> lift (peekChar i) >>= \case 
       (Just c) | isDigit c -> pure c
       (Just c) | otherwise -> throwE UnexpectedInput
       Nothing -> throwE Eof
