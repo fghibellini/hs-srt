@@ -22,7 +22,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString, (!?))
 import Data.Word (Word8)
 import Data.Word8 (isDigit, isSpace)
-import Debug.Trace (traceShow, trace)
+import Debug.Trace (traceShowId, traceShow, trace)
 import Data.Bifunctor (bimap, Bifunctor)
 import Data.Either (either)
 import Data.Void (Void, absurd)
@@ -313,7 +313,10 @@ parseTimestamp = do
 
 parse :: SubRipContent a => Show (ContentError a) => FilePath -> IO (SubRip a)
 parse f = do
-  contents <- BS.drop 3 <$> BS.readFile f -- dropping BOM
+  -- TODO perf ?
+  contents <- BS.readFile f <&> \x -> case BS.take 3 x of -- dropping BOM
+    "0xEF 0xBB 0xBF" -> BS.drop 3 x
+    _ -> x
   case parseBS contents of
     Right subrip -> pure subrip
     Left err -> error ("Parse error: " <> show err)
@@ -337,3 +340,6 @@ loopM act x = do
     case res of
         Left x -> loopM act x
         Right v -> pure v
+
+(<&>) :: Functor f => f a -> (a -> b) -> f b
+(<&>) = flip fmap
