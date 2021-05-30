@@ -54,6 +54,7 @@ benchmarks:
     - hs-srt
     - text
     - criterion
+    - bytestring
 
 tests:
   hs-srt-test:

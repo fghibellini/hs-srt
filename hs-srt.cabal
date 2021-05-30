@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 39790e9927e87ac43b794443d53f9c8ecee4e985e410c5a1a294bbf37856b0e0
+-- hash: 91d86f0f01365203b4697c0ec53deef1aad5ef2923fcbdf2ff8be14c51adc14e
 
 name:           hs-srt
 version:        0.1.0.0
@@ -79,6 +79,7 @@ benchmark hs-srt-criterion
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , bytestring
     , criterion
     , hs-srt
     , text
