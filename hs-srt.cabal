@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 395f632f9e346ce3f01bc349173371513af3c5d29e27fd013eddf84e6a952606
+-- hash: 39790e9927e87ac43b794443d53f9c8ecee4e985e410c5a1a294bbf37856b0e0
 
 name:           hs-srt
 version:        0.1.0.0
@@ -67,4 +67,19 @@ test-suite hs-srt-test
     , hs-srt
     , hspec
     , hspec-contrib
+  default-language: Haskell2010
+
+benchmark hs-srt-criterion
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Paths_hs_srt
+  hs-source-dirs:
+      bench
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , criterion
+    , hs-srt
+    , text
   default-language: Haskell2010
