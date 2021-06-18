@@ -37,12 +37,13 @@ data ParserState
   { position :: !Int -- current focus of the parser
   , buffer :: !ByteString -- original input data
   , len :: !Int -- length of buffer
+  , filename :: !FilePath -- filename displayed in token locations
   }
 
 newtype Parser e a = Parser { unParser :: ParserState -> Either e (a, ParserState) }
 
-runParser :: Parser e a -> ByteString -> Either e a
-runParser (Parser p) input = fst <$> p (ParserState { position = 0, buffer = input, len = BS.length input })
+runParser :: Parser e a -> FilePath -> ByteString -> Either e a
+runParser (Parser p) filename input = fst <$> p (ParserState { position = 0, buffer = input, len = BS.length input, filename = filename })
 
 instance Functor (Parser e) where
   -- fmap f (Parser p) = Parser ((fmap . fmap) f . p)
@@ -68,6 +69,10 @@ instance Monad (Parser e) where
 -- read character relative to focus (0 returns the focus)
 peekChar :: Int -> Parser e (Maybe Word8)
 peekChar i = Parser \p@ParserState { position, buffer } -> Right (buffer !? (position + i), p)
+
+-- the the current focus of the parser
+getPos :: Parser e Int
+getPos = Parser \p@ParserState { position } -> Right (position, p)
 
 -- read bytestring
 peekByteString :: Int -> Parser e ByteString
@@ -166,7 +171,15 @@ lf = "\x0A"
 crlf :: ByteString
 crlf = "\x0D\x0A"
 
-newtype RawLine = RawLine { unRawLine :: ByteString }
+data Span = Span { start :: Int, end :: Int, source :: FilePath } deriving Show
+
+
+-- the the current focus of the parser
+genSpan :: Parser e Span
+genSpan = Parser \p@ParserState { position, filename } -> Right (Span { start = position, end = position, source = filename }, p)
+
+
+data RawLine = RawLine { unRawLine :: ByteString, location :: Span }
   deriving Show
 
 class SubRipContent a where
@@ -176,6 +189,7 @@ class SubRipContent a where
 instance SubRipContent RawLine where
   type ContentError RawLine = RawLineParsingError
   parseContent = do
+      span <- genSpan
       sepIndex <- flip loopM 0 \i -> do
         r <- isSeparator i
         case r of
@@ -185,7 +199,7 @@ instance SubRipContent RawLine where
       moveFocus sepIndex
       () <- replaceError (Err_03 RawErr_02) $ parseNewLine
       () <- replaceError (Err_03 RawErr_02) $ parseNewLine
-      pure $ RawLine contents
+      pure $ RawLine contents $ span { end = end span + sepIndex }
     where
       isSeparator i = do 
         r1 <- peekChar (i + 0)
@@ -219,7 +233,7 @@ parseSpan predicate = do
 parseIndex :: Parser (LineParseError a) Int
 parseIndex = do
   digits <- mapError absurd $ parseSpan isDigit
-  replaceError Err_02 $ parseNewLine
+  replaceError Err_02 parseNewLine
   pure $ digitsToInt digits
 
 
@@ -315,21 +329,24 @@ parse :: SubRipContent a => Show (ContentError a) => FilePath -> IO (SubRip a)
 parse f = do
   -- TODO perf ?
   contents <- BS.readFile f <&> \x -> case BS.take 3 x of -- dropping BOM
-    "0xEF 0xBB 0xBF" -> BS.drop 3 x
+    "\239\187\191" -> BS.drop 3 x
     _ -> x
-  case parseBS contents of
+  case parseData f contents of
     Right subrip -> pure subrip
     Left err -> error ("Parse error: " <> show err)
 
 parseBS :: SubRipContent a => Show (ContentError a) => ByteString -> Either (LineParseError (ContentError a)) (SubRip a)
-parseBS input = do
+parseBS input = parseData "<bytestring>" input
+
+parseData :: SubRipContent a => Show (ContentError a) => FilePath -> ByteString -> Either (LineParseError (ContentError a)) (SubRip a)
+parseData sourceName input = do
   let parseLines = do
           l <- parseLine
           done <- isDone
           case done of
             True -> pure [l]
             False -> (l:) <$> parseLines
-  case runParser parseLines input of
+  case runParser parseLines sourceName input of
     Right lines -> Right $ SubRip lines
     Left err -> Left err
 
