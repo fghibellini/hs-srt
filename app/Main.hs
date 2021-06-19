@@ -5,7 +5,7 @@ module Main where
 
 import Lib (parse, SubRip, RawLine, contents, unRawLine, Located(..))
 import Lib as Lib
-import Html (Html, innerText)
+import Html (Html, innerText, printTree)
 
 import System.Environment (getArgs)
 -- import Text.HTML.TagSoup (parseTags, innerText)
@@ -32,7 +32,8 @@ main = do
         textLines = ((innerText . value . contents) <$> Lib.lines subs)
         words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
       putStrLn "SUBS:"
-      print subs
+      -- print subs
+      for_ (Lib.lines subs) $ \line -> printTree (value (contents line))
       putStrLn "WORDS:"
       for_ words \line -> putStrLn $ unpack line
     xs -> do

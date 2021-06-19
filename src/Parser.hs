@@ -167,7 +167,11 @@ eitherToParser x = Parser \p -> (,p) <$> x
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) = flip fmap
 
-data Span = Span { start :: Int, end :: Int, source :: FilePath } deriving Show
+data Span = Span { start :: Int, end :: Int, source :: FilePath }
+
+instance Show Span where
+  show (Span s e src) = "..." <> ":[" <> show s <> ".." <> show e <> "]"
+  -- show (Span s e src) = src <> ":[" <> show s <> "," <> show e <> "]"
 
 
 -- the the current focus of the parser
@@ -177,6 +181,6 @@ genSpan = Parser \p@ParserState { position, filename } -> Right (Span { start = 
 data Located a = Located { location :: Span, value :: a }
 
 instance Show a => Show (Located a) where
-  show (Located loc v) = "(<" <> show v <> ">@" <> show loc <> ")"
+  show (Located loc v) = "(" <> show v <> ")@[" <> show loc <> "]"
 
 instance Eq a => Eq (Located a) where

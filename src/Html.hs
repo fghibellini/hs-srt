@@ -13,29 +13,42 @@ import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
 import Data.ByteString.Internal (c2w)
 
-newtype Html = Html HtmlNode deriving Show
+newtype Html = Html (Located Node) deriving (Eq)
 
-type HtmlNode
-  = Located Html_
+instance Show Html where
+  show (Html (Located loc n)) = "(<" <> show n <> ">@" <> show loc <> ")"
 
-data Html_
+data Node
   = TextNode ByteString
-  | Element Text HtmlNode
-  | Seq [HtmlNode]
+  | Element Text Html
+  | Seq [Html]
   deriving (Eq, Show)
 
 data HtmlError = HtmlError_001 deriving (Eq, Show)
 
 
 innerText :: Html -> Text
-innerText (Html node) = innerTextNode node
+innerText (Html (Located _ node)) = innerTextNode node
   where
-    innerTextNode :: HtmlNode -> Text
-    innerTextNode (Located _ html) = innerTextNode' html
+    innerTextNode (TextNode bs) = decodeUtf8 bs
+    innerTextNode (Element _ html) = innerText html
+    innerTextNode (Seq hs) = foldMap innerText hs
 
-    innerTextNode' (TextNode bs) = decodeUtf8 bs
-    innerTextNode' (Element _ html) = innerTextNode html
-    innerTextNode' (Seq hs) = foldMap innerTextNode hs
+printTree :: Html -> IO ()
+printTree = printTree' ""
+  where
+  printTree' indent (Html (Located loc (TextNode txt))) = do
+    putStr indent
+    putStrLn $ "<TextNode@" <> show loc <> " text=\"" <> unpack (decodeUtf8 txt) <> "\">"
+  printTree' indent (Html (Located loc (Seq hs))) = do
+    putStr indent
+    putStrLn $ "<--Seq--@" <> show loc <> ">"
+    () <$ traverse (printTree' (indent <> "  ")) hs
+  printTree' indent (Html (Located loc (Element name children))) = do
+    putStr indent
+    putStrLn $ "<" <> unpack name <> "@" <> show loc <> ">"
+    printTree' (indent <> "  ") children
+    
 
 parseAttributes :: Parser SmallErr [a]
 parseAttributes = pure []
@@ -47,17 +60,17 @@ parseTagName = do
     isIdChar x = w2c x `elem` idChars
     idChars = ['a'..'z'] <> ['A'..'Z']
 
-parseHtml :: Parser (LineParseError HtmlError) HtmlNode
+parseHtml :: Parser (LineParseError HtmlError) Html
 parseHtml = do
     i <- getPos
     parseHtml_ [dummyRoot i]
   where
     dummyRoot i = HtmlOpenTag "**root**" i []
 
-data HtmlOpenTag = HtmlOpenTag { _openTagName :: Text, _startOffset :: Int, _childrenAccumulator :: [HtmlNode] } deriving Show
+data HtmlOpenTag = HtmlOpenTag { _openTagName :: Text, _startOffset :: Int, _childrenAccumulator :: [Html] } deriving Show
 
 -- TODO replace dummy errors
-parseHtml_ :: [HtmlOpenTag] -> Parser (LineParseError HtmlError) HtmlNode
+parseHtml_ :: [HtmlOpenTag] -> Parser (LineParseError HtmlError) Html
 parseHtml_ ctx = do
   parserLog $ "parseHtml"
   -- parserLog $ show ctx
@@ -68,7 +81,7 @@ parseHtml_ ctx = do
       _ <- replaceError (error "should never happen") $ (parseNewLine >> parseNewLine) -- TODO double work
       let ((HtmlOpenTag _ i cacc):ctx') = ctx
       span <- genSpan
-      pure $ Located (span { start = i }) $ Seq cacc
+      pure $ Html $ Located (span { start = i }) $ Seq cacc
     Nothing -> do
       c <- peekChar 0
       case c of
@@ -89,7 +102,7 @@ parseHtml_ ctx = do
       let
         ((HtmlOpenTag n i cacc):ctx') = ctx
         ctx'' :: Span -> [HtmlOpenTag]
-        ctx'' span = (HtmlOpenTag n i (cacc <> [Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
+        ctx'' span = (HtmlOpenTag n i (cacc <> [Html $ Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
         terminateText = do
           span <- genSpan
           parseHtml_ (ctx'' span)
@@ -129,10 +142,10 @@ parseHtml_ ctx = do
       else do
         span <- genSpan
         replaceError (Err_03 HtmlError_001) $ parseChar '>'
-        parseHtml_ ((HtmlOpenTag n2 i2 $ cacc2 <> [Located (span { start =  i }) $ Element name (Located span $ Seq cacc)]):ctx') -- TODO don't create Seq for just one element, TODO fix location of Seq
+        parseHtml_ ((HtmlOpenTag n2 i2 $ cacc2 <> [Html $ Located (span { start =  i }) $ Element name (Html $ Located span $ Seq cacc)]):ctx') -- TODO don't create Seq for just one element, TODO fix location of Seq
 
 
 instance SubRipContent Html where
   type ContentError Html = HtmlError
-  parseContent = Html <$> parseHtml
+  parseContent = parseHtml
 
