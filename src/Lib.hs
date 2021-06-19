@@ -16,6 +16,7 @@ module Lib
     , RawLine(..)
     , Lib.lines
     , contents
+    , Located(..)
     ) where
 
 import qualified Data.ByteString as BS
@@ -23,80 +24,14 @@ import Data.ByteString (ByteString, (!?))
 import Data.Word (Word8)
 import Data.Word8 (isDigit, isSpace)
 import Debug.Trace (traceShowId, traceShow, trace)
-import Data.Bifunctor (bimap, Bifunctor)
 import Data.Either (either)
 import Data.Void (Void, absurd)
 import Control.Monad.Trans.Except (ExceptT(..), throwE, runExceptT)
+import Data.Bifunctor (bimap, Bifunctor)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Fail (fail)
 import Data.Traversable (for)
-import Debug.Trace (traceShow)
-
-data ParserState
-  = ParserState
-  { position :: !Int -- current focus of the parser
-  , buffer :: !ByteString -- original input data
-  , len :: !Int -- length of buffer
-  , filename :: !FilePath -- filename displayed in token locations
-  }
-
-newtype Parser e a = Parser { unParser :: ParserState -> Either e (a, ParserState) }
-
-runParser :: Parser e a -> FilePath -> ByteString -> Either e a
-runParser (Parser p) filename input = fst <$> p (ParserState { position = 0, buffer = input, len = BS.length input, filename = filename })
-
-instance Functor (Parser e) where
-  -- fmap f (Parser p) = Parser ((fmap . fmap) f . p)
-  fmap f (Parser p) = Parser \s0 -> case p s0 of
-    Left e -> Left e
-    Right (x, s1) -> Right (f x, s1)
-
-instance Bifunctor Parser where
-  -- bimap f1 f2 (Parser p) = Parser (bimap f1 (fmap f2) . p)
-  bimap f1 f2 (Parser p) = Parser \s0 -> case p s0 of
-    Left e -> Left $ f1 e
-    Right (x,s1) -> Right (f2 x, s1)
-
-instance Applicative (Parser e) where
-  pure x = Parser \p -> Right (x, p)
-
-instance Monad (Parser e) where
-  Parser p1 >>= f = Parser \s0 ->
-    case p1 s0 of
-      Left e -> Left e
-      Right (x,s1) -> let Parser p2 = f x in p2 s1
-
--- read character relative to focus (0 returns the focus)
-peekChar :: Int -> Parser e (Maybe Word8)
-peekChar i = Parser \p@ParserState { position, buffer } -> Right (buffer !? (position + i), p)
-
--- the the current focus of the parser
-getPos :: Parser e Int
-getPos = Parser \p@ParserState { position } -> Right (position, p)
-
--- read bytestring
-peekByteString :: Int -> Parser e ByteString
-peekByteString l = Parser \p@ParserState { position, buffer } -> Right (BS.take l $ BS.drop position buffer, p)
-
--- shifts the focus by the passed amount (0 is a noop)
-moveFocus :: Int -> Parser e ()
-moveFocus n = Parser \p@ParserState { position } -> Right ((), p { position = position + n })
-
-failParse :: e -> Parser e a
-failParse e = Parser \_ -> Left e
-
--- for debugging purposes only
-dumpState :: Parser e ()
-dumpState = Parser \s -> traceShow (renderState s) (Right ((), s))
-  where
-    renderState (ParserState { position, buffer }) = BS.take 20 $ BS.drop position buffer
-
--- for debugging purposes only
-parserLog :: String -> Parser e ()
-parserLog msg = Parser \s -> trace msg (Right ((), s))
-
-isDone :: Parser e Bool
-isDone = Parser \p@ParserState { position, len } -> Right (position >= len, p)
+import Parser
 
 data SubRip a = SubRip { lines :: [Line a] }
   deriving Show
@@ -133,7 +68,7 @@ data Line a
   = Line
   { index :: Int
   , range :: Range
-  , contents :: a
+  , contents :: Located a
   }
 
 instance Show a => Show (Line a) where
@@ -162,7 +97,7 @@ parseLine :: SubRipContent a => Parser (LineParseError (ContentError a)) (Line a
 parseLine = do
   index <- parseIndex
   range <- parseRange 
-  contts <- parseContent
+  contts <- parseLocated parseContent
   pure $ Line index range contts
 
 lf :: ByteString
@@ -178,18 +113,26 @@ data Span = Span { start :: Int, end :: Int, source :: FilePath } deriving Show
 genSpan :: Parser e Span
 genSpan = Parser \p@ParserState { position, filename } -> Right (Span { start = position, end = position, source = filename }, p)
 
+data Located a = Located { location :: Span, value :: a } deriving Show
 
-data RawLine = RawLine { unRawLine :: ByteString, location :: Span }
+newtype RawLine = RawLine { unRawLine :: ByteString }
   deriving Show
 
 class SubRipContent a where
   type ContentError a :: *
   parseContent :: Parser (LineParseError (ContentError a)) a
 
+parseLocated :: Parser e a -> Parser e (Located a)
+parseLocated p = do
+      span <- genSpan
+      p0 <- getPos
+      v <- p
+      p1 <- getPos
+      pure $ Located { location = span { start = p0, end = p1 }, value = v }
+
 instance SubRipContent RawLine where
   type ContentError RawLine = RawLineParsingError
   parseContent = do
-      span <- genSpan
       sepIndex <- flip loopM 0 \i -> do
         r <- isSeparator i
         case r of
@@ -199,7 +142,7 @@ instance SubRipContent RawLine where
       moveFocus sepIndex
       () <- replaceError (Err_03 RawErr_02) $ parseNewLine
       () <- replaceError (Err_03 RawErr_02) $ parseNewLine
-      pure $ RawLine contents $ span { end = end span + sepIndex }
+      pure $ RawLine contents
     where
       isSeparator i = do 
         r1 <- peekChar (i + 0)
@@ -257,14 +200,6 @@ parseNewLine = do
         _ -> failParse ()
     _ -> failParse ()
 
-parseFixedBS :: ByteString -> Parser () ()
-parseFixedBS needle = do
-  let len = BS.length needle
-  cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..(len - 1)]
-  if Right needle == (BS.pack <$> cs)
-  then moveFocus len
-  else failParse ()
-
 parseRange :: Parser (LineParseError a) Range
 parseRange = do
   t0 <- parseTimestamp
@@ -273,20 +208,13 @@ parseRange = do
   () <- replaceError Err_04 $ parseNewLine
   pure $ Range t0 t1
 
-replaceError :: e' -> Parser e a -> Parser e' a
-replaceError e x = mapError (\_ -> e) x 
 
-mapError :: (e -> e') -> Parser e a -> Parser e' a
-mapError f x = bimap f id x
-
-data SmallErr = Eof | UnexpectedInput
-
-parseChar :: Word8 -> Parser SmallErr ()
-parseChar x = do
-  c <- peekChar 0
-  if Just x == c 
-  then moveFocus 1
-  else failParse UnexpectedInput
+-- parseChar :: Word8 -> Parser SmallErr ()
+-- parseChar x = do
+--   c <- peekChar 0
+--   if Just x == c 
+--   then moveFocus 1
+--   else failParse UnexpectedInput
   
 
 eitherToParser :: Either e a -> Parser e a
@@ -317,11 +245,11 @@ parseFixedDigitNumber n = do
 parseTimestamp :: Parser (LineParseError a) Timestamp
 parseTimestamp = do
   hs <- replaceError Err_06 $ parseFixedDigitNumber 2
-  () <- replaceError Err_07 $ parseChar 58 -- ':'
+  () <- replaceError Err_07 $ parseWord8 58 -- ':'
   ms <- replaceError Err_06 $ parseFixedDigitNumber 2
-  () <- replaceError Err_07 $ parseChar 58 -- ':'
+  () <- replaceError Err_07 $ parseWord8 58 -- ':'
   ss <- replaceError Err_06 $ parseFixedDigitNumber 2
-  () <- replaceError Err_08 $ parseChar 44 -- ','
+  () <- replaceError Err_08 $ parseWord8 44 -- ','
   mss <- replaceError Err_06 $ parseFixedDigitNumber 3
   pure $ Timestamp (hs * oneHour + ms * oneMinute + ss * oneSecond + mss)
 
@@ -350,13 +278,3 @@ parseData sourceName input = do
     Right lines -> Right $ SubRip lines
     Left err -> Left err
 
--- taken from https://hackage.haskell.org/package/extra-1.7.9/docs/src/Control.Monad.Extra.html#loopM
-loopM :: Monad m => (a -> m (Either a b)) -> a -> m b
-loopM act x = do
-    res <- act x
-    case res of
-        Left x -> loopM act x
-        Right v -> pure v
-
-(<&>) :: Functor f => f a -> (a -> b) -> f b
-(<&>) = flip fmap

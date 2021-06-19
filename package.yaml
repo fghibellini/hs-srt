@@ -28,6 +28,7 @@ library:
   - bytestring
   - word8
   - transformers
+  - text
 
 executables:
   hs-srt-exe:

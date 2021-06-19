@@ -3,7 +3,7 @@
 
 module Main where
 
-import Lib (parse, SubRip, RawLine, contents, unRawLine)
+import Lib (parse, SubRip, RawLine, contents, unRawLine, Located(..))
 import Lib as Lib
 
 import System.Environment (getArgs)
@@ -27,7 +27,7 @@ main = do
       subs <- ((parse f) :: IO (SubRip RawLine))
       let
         textLines :: [Text]
-        textLines = ((decodeUtf8 . innerText . parseTags . unRawLine . contents) <$> Lib.lines subs)
+        textLines = ((decodeUtf8 . innerText . parseTags . unRawLine . value . contents) <$> Lib.lines subs)
         words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
       for_ words \line -> putStrLn $ unpack line
     xs -> do

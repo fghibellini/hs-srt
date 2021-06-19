@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 91d86f0f01365203b4697c0ec53deef1aad5ef2923fcbdf2ff8be14c51adc14e
+-- hash: 32ff7f6f6cbc0ae7d413f755f8676e38e687c9387253febc2bf4632b92b42ad0
 
 name:           hs-srt
 version:        0.1.0.0
@@ -27,7 +27,9 @@ source-repository head
 
 library
   exposed-modules:
+      Html
       Lib
+      Parser
   other-modules:
       Paths_hs_srt
   hs-source-dirs:
@@ -35,6 +37,7 @@ library
   build-depends:
       base >=4.7 && <5
     , bytestring
+    , text
     , transformers
     , word8
   default-language: Haskell2010
