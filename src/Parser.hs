@@ -16,6 +16,7 @@ import Debug.Trace (traceShowId, traceShow, trace)
 import Control.Monad.Trans.Except (ExceptT(..), throwE, runExceptT)
 import Data.ByteString.Internal (c2w)
 import Data.Maybe (catMaybes)
+import Data.Void (Void, absurd)
 
 
 data ParserState
@@ -111,6 +112,16 @@ replaceError e x = mapError (\_ -> e) x
 mapError :: (e -> e') -> Parser e a -> Parser e' a
 mapError f x = bimap f id x
 
+-- try :: Parser e a -> Parser e a
+-- try (Parser p) = Parser \s -> either ( $ p s
+
+peek :: Parser e a -> Parser f (Maybe a)
+peek (Parser p) = Parser \s -> either (\_ -> Right (Nothing, s)) (\(x, _) -> Right (Just x, s)) $ p s
+
+alt :: Parser e1 a -> Parser e2 a -> Parser e2 a
+alt (Parser p1) (Parser p2) = Parser \s -> either (\e -> p2 s) Right $ p1 s
+
+-- broken - use parseSpan instead
 parseWhile :: (Maybe Word8 -> Bool) -> Parser () ByteString
 parseWhile f = do
   (i, chars) <- loopM fn (0, [])
@@ -123,6 +134,13 @@ parseWhile f = do
       then Left (i + 1, c:cs)
       else Right (i - 1, cs)
   
+parseSpan :: (Word8 -> Bool) -> Parser Void [Word8]
+parseSpan predicate = do
+  r <- peekChar 0
+  case r of
+    Just c | predicate c -> (c :) <$> (moveFocus 1 >> parseSpan predicate)
+    _ -> pure []
+
 -- taken from https://hackage.haskell.org/package/extra-1.7.9/docs/src/Control.Monad.Extra.html#loopM
 loopM :: Monad m => (a -> m (Either a b)) -> a -> m b
 loopM act x = do
@@ -130,6 +148,21 @@ loopM act x = do
     case res of
         Left x -> loopM act x
         Right v -> pure v
+
+parseNewLine :: Parser () ()
+parseNewLine = do
+  c1 <- peekChar 0
+  case c1 of
+    Just 0x0A -> moveFocus 1
+    Just 0x0D -> do
+      c2 <- peekChar 1
+      case c2 of
+        Just 0x0A -> moveFocus 2
+        _ -> failParse ()
+    _ -> failParse ()
+
+eitherToParser :: Either e a -> Parser e a
+eitherToParser x = Parser \p -> (,p) <$> x
 
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) = flip fmap

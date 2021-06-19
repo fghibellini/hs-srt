@@ -5,9 +5,10 @@ module Main where
 
 import Lib (parse, SubRip, RawLine, contents, unRawLine, Located(..))
 import Lib as Lib
+import Html (Html, innerText)
 
 import System.Environment (getArgs)
-import Text.HTML.TagSoup (parseTags, innerText)
+-- import Text.HTML.TagSoup (parseTags, innerText)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Text (Text, unpack)
 import qualified Data.Text as T
@@ -24,11 +25,28 @@ main = do
   args <- getArgs
   case args of
     [f] -> do
-      subs <- ((parse f) :: IO (SubRip RawLine))
+      subs <- ((parse f) :: IO (SubRip Html))
       let
         textLines :: [Text]
-        textLines = ((decodeUtf8 . innerText . parseTags . unRawLine . value . contents) <$> Lib.lines subs)
+        textLines = ((innerText . value . contents) <$> Lib.lines subs)
         words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
+      putStrLn "SUBS:"
+      print subs
+      putStrLn "WORDS:"
       for_ words \line -> putStrLn $ unpack line
     xs -> do
       error ("Invalid number of arguments (expected 1, got " <> show (length xs) <> ")")
+
+-- main :: IO ()
+-- main = do
+--   args <- getArgs
+--   case args of
+--     [f] -> do
+--       subs <- ((parse f) :: IO (SubRip RawLine))
+--       let
+--         textLines :: [Text]
+--         textLines = ((decodeUtf8 . innerText . parseTags . unRawLine . value . contents) <$> Lib.lines subs)
+--         words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
+--       for_ words \line -> putStrLn $ unpack line
+--     xs -> do
+--       error ("Invalid number of arguments (expected 1, got " <> show (length xs) <> ")")

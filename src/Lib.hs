@@ -17,6 +17,8 @@ module Lib
     , Lib.lines
     , contents
     , Located(..)
+    , LineParseError(..)
+    , SubRipContent(..)
     ) where
 
 import qualified Data.ByteString as BS
@@ -166,16 +168,10 @@ instance SubRipContent RawLine where
 unfold :: (a -> Either b a) -> a -> b
 unfold f x = either id (unfold f) $ f x 
 
-parseSpan :: (Word8 -> Bool) -> Parser Void [Word8]
-parseSpan predicate = do
-  r <- peekChar 0
-  case r of
-    Just c | predicate c -> (c :) <$> (moveFocus 1 >> parseSpan predicate)
-    _ -> pure []
-
 parseIndex :: Parser (LineParseError a) Int
 parseIndex = do
   digits <- mapError absurd $ parseSpan isDigit
+  dumpState
   replaceError Err_02 parseNewLine
   pure $ digitsToInt digits
 
@@ -188,25 +184,6 @@ digitsToInt = sum . zipWith (*) powersOfTen . reverse . fmap fromDigit
     powersOfTen :: [Int]
     powersOfTen = iterate (*10) 1
 
-parseNewLine :: Parser () ()
-parseNewLine = do
-  c1 <- peekChar 0
-  case c1 of
-    Just 0x0A -> moveFocus 1
-    Just 0x0D -> do
-      c2 <- peekChar 1
-      case c2 of
-        Just 0x0A -> moveFocus 2
-        _ -> failParse ()
-    _ -> failParse ()
-
-parseRange :: Parser (LineParseError a) Range
-parseRange = do
-  t0 <- parseTimestamp
-  () <- replaceError Err_01 $ parseFixedBS " --> "
-  t1 <- parseTimestamp
-  () <- replaceError Err_04 $ parseNewLine
-  pure $ Range t0 t1
 
 
 -- parseChar :: Word8 -> Parser SmallErr ()
@@ -216,9 +193,6 @@ parseRange = do
 --   then moveFocus 1
 --   else failParse UnexpectedInput
   
-
-eitherToParser :: Either e a -> Parser e a
-eitherToParser x = Parser \p -> (,p) <$> x
 
 parseFixedDigitNumber :: Int -> Parser SmallErr Int
 parseFixedDigitNumber n = do
@@ -262,6 +236,14 @@ parse f = do
   case parseData f contents of
     Right subrip -> pure subrip
     Left err -> error ("Parse error: " <> show err)
+
+parseRange :: Parser (LineParseError a) Range
+parseRange = do
+  t0 <- parseTimestamp
+  () <- replaceError Err_01 $ parseFixedBS " --> "
+  t1 <- parseTimestamp
+  () <- replaceError Err_04 $ parseNewLine
+  pure $ Range t0 t1
 
 parseBS :: SubRipContent a => Show (ContentError a) => ByteString -> Either (LineParseError (ContentError a)) (SubRip a)
 parseBS input = parseData "<bytestring>" input
