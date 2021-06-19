@@ -13,41 +13,45 @@ import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
 import Data.ByteString.Internal (c2w)
 
-newtype Html = Html (Located Node) deriving (Eq)
+data Html
+  = HtmlNode (Located Node)
+  | HtmlSeq [Html]
+  deriving (Eq)
 
 instance Show Html where
-  show (Html (Located loc n)) = "(<" <> show n <> ">@" <> show loc <> ")"
+  show (HtmlNode (Located loc n)) = "(<" <> show n <> ">@" <> show loc <> ")"
+  show (HtmlSeq xs) = foldMap show xs
 
 data Node
   = TextNode ByteString
   | Element Text Html
-  | Seq [Html]
   deriving (Eq, Show)
 
 data HtmlError = HtmlError_001 deriving (Eq, Show)
 
-
 innerText :: Html -> Text
-innerText (Html (Located _ node)) = innerTextNode node
+innerText = innerTextHtml
   where
+    innerTextHtml (HtmlNode (Located _ node)) = innerTextNode node
+    innerTextHtml (HtmlSeq xs) = foldMap innerText xs
+
     innerTextNode (TextNode bs) = decodeUtf8 bs
     innerTextNode (Element _ html) = innerText html
-    innerTextNode (Seq hs) = foldMap innerText hs
 
 printTree :: Html -> IO ()
 printTree = printTree' ""
   where
-  printTree' indent (Html (Located loc (TextNode txt))) = do
+  printTree' indent (HtmlNode (Located loc (TextNode txt))) = do
     putStr indent
     putStrLn $ "<TextNode@" <> show loc <> " text=\"" <> unpack (decodeUtf8 txt) <> "\">"
-  printTree' indent (Html (Located loc (Seq hs))) = do
-    putStr indent
-    putStrLn $ "<--Seq--@" <> show loc <> ">"
-    () <$ traverse (printTree' (indent <> "  ")) hs
-  printTree' indent (Html (Located loc (Element name children))) = do
+  printTree' indent (HtmlNode (Located loc (Element name children))) = do
     putStr indent
     putStrLn $ "<" <> unpack name <> "@" <> show loc <> ">"
     printTree' (indent <> "  ") children
+  printTree' indent (HtmlSeq hs) = do
+    putStr indent
+    putStrLn $ "<--Seq-->"
+    () <$ traverse (printTree' (indent <> "  ")) hs
     
 
 parseAttributes :: Parser SmallErr [a]
@@ -81,7 +85,7 @@ parseHtml_ ctx = do
       _ <- replaceError (error "should never happen") $ (parseNewLine >> parseNewLine) -- TODO double work
       let ((HtmlOpenTag _ i cacc):ctx') = ctx
       span <- genSpan
-      pure $ Html $ Located (span { start = i }) $ Seq cacc
+      pure $ HtmlSeq cacc
     Nothing -> do
       c <- peekChar 0
       case c of
@@ -102,7 +106,7 @@ parseHtml_ ctx = do
       let
         ((HtmlOpenTag n i cacc):ctx') = ctx
         ctx'' :: Span -> [HtmlOpenTag]
-        ctx'' span = (HtmlOpenTag n i (cacc <> [Html $ Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
+        ctx'' span = (HtmlOpenTag n i (cacc <> [HtmlNode $ Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
         terminateText = do
           span <- genSpan
           parseHtml_ (ctx'' span)
@@ -142,7 +146,7 @@ parseHtml_ ctx = do
       else do
         span <- genSpan
         replaceError (Err_03 HtmlError_001) $ parseChar '>'
-        parseHtml_ ((HtmlOpenTag n2 i2 $ cacc2 <> [Html $ Located (span { start =  i }) $ Element name (Html $ Located span $ Seq cacc)]):ctx') -- TODO don't create Seq for just one element, TODO fix location of Seq
+        parseHtml_ ((HtmlOpenTag n2 i2 $ cacc2 <> [HtmlNode $ Located (span { start =  i }) $ Element name (HtmlSeq cacc)]):ctx') -- TODO don't create Seq for just one element, TODO fix location of Seq
 
 
 instance SubRipContent Html where
