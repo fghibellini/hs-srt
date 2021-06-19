@@ -13,19 +13,29 @@ import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
 import Data.ByteString.Internal (c2w)
 
-data Html
+newtype Html = Html HtmlNode deriving Show
+
+type HtmlNode
+  = Located Html_
+
+data Html_
   = TextNode ByteString
-  | Element Text Html
-  | Seq [Html]
+  | Element Text HtmlNode
+  | Seq [HtmlNode]
   deriving (Eq, Show)
 
 data HtmlError = HtmlError_001 deriving (Eq, Show)
 
 
 innerText :: Html -> Text
-innerText (TextNode bs) = decodeUtf8 bs
-innerText (Element _ html) = innerText html
-innerText (Seq hs) = foldMap innerText hs
+innerText (Html node) = innerTextNode node
+  where
+    innerTextNode :: HtmlNode -> Text
+    innerTextNode (Located _ html) = innerTextNode' html
+
+    innerTextNode' (TextNode bs) = decodeUtf8 bs
+    innerTextNode' (Element _ html) = innerTextNode html
+    innerTextNode' (Seq hs) = foldMap innerTextNode hs
 
 parseAttributes :: Parser SmallErr [a]
 parseAttributes = pure []
@@ -37,25 +47,28 @@ parseTagName = do
     isIdChar x = w2c x `elem` idChars
     idChars = ['a'..'z'] <> ['A'..'Z']
 
-parseHtml :: Parser (LineParseError HtmlError) Html
-parseHtml = parseHtml_ [dummyRoot]
+parseHtml :: Parser (LineParseError HtmlError) HtmlNode
+parseHtml = do
+    i <- getPos
+    parseHtml_ [dummyRoot i]
   where
-    dummyRoot = HtmlOpenTag "**root**" []
+    dummyRoot i = HtmlOpenTag "**root**" i []
 
-data HtmlOpenTag = HtmlOpenTag { _openTagName :: Text, _childrenAccumulator :: [Html] } deriving Show
+data HtmlOpenTag = HtmlOpenTag { _openTagName :: Text, _startOffset :: Int, _childrenAccumulator :: [HtmlNode] } deriving Show
 
 -- TODO replace dummy errors
-parseHtml_ :: [HtmlOpenTag] -> Parser (LineParseError HtmlError) Html
+parseHtml_ :: [HtmlOpenTag] -> Parser (LineParseError HtmlError) HtmlNode
 parseHtml_ ctx = do
   parserLog $ "parseHtml"
-  parserLog $ show ctx
+  -- parserLog $ show ctx
   dumpState
   nl <- peek (parseNewLine >> parseNewLine)
   case nl of
     Just _ -> do
       _ <- replaceError (error "should never happen") $ (parseNewLine >> parseNewLine) -- TODO double work
-      let ((HtmlOpenTag _ cacc):ctx') = ctx
-      pure $ Seq cacc
+      let ((HtmlOpenTag _ i cacc):ctx') = ctx
+      span <- genSpan
+      pure $ Located (span { start = i }) $ Seq cacc
     Nothing -> do
       c <- peekChar 0
       case c of
@@ -74,9 +87,12 @@ parseHtml_ ctx = do
 
     parseText' acc = do
       let
-        ((HtmlOpenTag n cacc):ctx') = ctx
-        ctx'' = (HtmlOpenTag n (cacc <> [TextNode $ BS.pack $ reverse acc])):ctx'
-        terminateText = parseHtml_ ctx''
+        ((HtmlOpenTag n i cacc):ctx') = ctx
+        ctx'' :: Span -> [HtmlOpenTag]
+        ctx'' span = (HtmlOpenTag n i (cacc <> [Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
+        terminateText = do
+          span <- genSpan
+          parseHtml_ (ctx'' span)
       nl <- peek (parseNewLine >> parseNewLine)
       case nl of
         Just _ -> terminateText
@@ -88,6 +104,7 @@ parseHtml_ ctx = do
             Just x | otherwise -> moveFocus 1 >> parseText' (x:acc)
 
     parseTag = do
+      sOffset <- getPos
       moveFocus 1
       name <- replaceError (Err_03 HtmlError_001) parseTagName
       parserLog $ "parsed tag: " <> unpack name
@@ -96,7 +113,7 @@ parseHtml_ ctx = do
       dumpState
       replaceError (Err_03 HtmlError_001) $ parseChar '>'
       parserLog "parsed '>'"
-      parseHtml_ (HtmlOpenTag name [] : ctx)
+      parseHtml_ (HtmlOpenTag name sOffset [] : ctx)
       -- replaceError (Err_03 HtmlError_001) $ parseFixedBS "</"
       -- name2 <- replaceError (Err_03 HtmlError_001) parseTagName
       -- --TODO assert name == name2
@@ -106,15 +123,16 @@ parseHtml_ ctx = do
     parseClosingTag = do
       moveFocus 2
       name <- replaceError (Err_03 HtmlError_001) parseTagName
-      let ((HtmlOpenTag n cacc):(HtmlOpenTag n2 cacc2):ctx') = ctx
+      let ((HtmlOpenTag n i cacc):(HtmlOpenTag n2 i2 cacc2):ctx') = ctx
       if name /= n
       then failParse $ Err_03 HtmlError_001
       else do
+        span <- genSpan
         replaceError (Err_03 HtmlError_001) $ parseChar '>'
-        parseHtml_ ((HtmlOpenTag n2 $ cacc2 <> [Element name (Seq cacc)]):ctx') -- TODO don't create Seq for just one element
+        parseHtml_ ((HtmlOpenTag n2 i2 $ cacc2 <> [Located (span { start =  i }) $ Element name (Located span $ Seq cacc)]):ctx') -- TODO don't create Seq for just one element, TODO fix location of Seq
 
 
 instance SubRipContent Html where
   type ContentError Html = HtmlError
-  parseContent = parseHtml
+  parseContent = Html <$> parseHtml
 

@@ -108,14 +108,6 @@ lf = "\x0A"
 crlf :: ByteString
 crlf = "\x0D\x0A"
 
-data Span = Span { start :: Int, end :: Int, source :: FilePath } deriving Show
-
-
--- the the current focus of the parser
-genSpan :: Parser e Span
-genSpan = Parser \p@ParserState { position, filename } -> Right (Span { start = position, end = position, source = filename }, p)
-
-data Located a = Located { location :: Span, value :: a } deriving Show
 
 newtype RawLine = RawLine { unRawLine :: ByteString }
   deriving Show

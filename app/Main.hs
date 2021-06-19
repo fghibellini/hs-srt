@@ -26,6 +26,7 @@ main = do
   case args of
     [f] -> do
       subs <- ((parse f) :: IO (SubRip Html))
+      putStrLn "DONE!"
       let
         textLines :: [Text]
         textLines = ((innerText . value . contents) <$> Lib.lines subs)
