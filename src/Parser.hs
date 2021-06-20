@@ -5,18 +5,22 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Parser where
 
 import qualified Data.ByteString as BS
 import Data.Bifunctor (bimap, Bifunctor)
 import Data.ByteString (ByteString, (!?))
+import Data.Int (Int16)
 import Data.Word (Word8)
 import Debug.Trace (traceShowId, traceShow, trace)
 import Control.Monad.Trans.Except (ExceptT(..), throwE, runExceptT)
-import Data.ByteString.Internal (c2w)
+import Data.ByteString.Internal (c2w, w2c)
 import Data.Maybe (catMaybes)
 import Data.Void (Void, absurd)
+import Data.Functor.Identity (runIdentity)
 
 
 data ParserState
@@ -46,6 +50,10 @@ instance Bifunctor Parser where
 
 instance Applicative (Parser e) where
   pure x = Parser \p -> Right (x, p)
+  pf <*> px = do
+    f <- pf
+    x <- px
+    pure (f x)
 
 instance Monad (Parser e) where
   Parser p1 >>= f = Parser \s0 ->
@@ -53,9 +61,41 @@ instance Monad (Parser e) where
       Left e -> Left e
       Right (x,s1) -> let Parser p2 = f x in p2 s1
 
+newtype Ch = Ch { unCh :: Int16 } deriving Eq
+
+instance Show Ch where
+  show (Ch (-1)) = "<EOF>"
+  show (Ch x) = [w2c $ fromIntegral x]
+
+eof :: Ch
+eof = Ch (-1)
+
+pattern EOI <- Ch (-1)
+pattern LF <- Ch 0x0A
+pattern CR <- Ch 0x0D
+
+pattern C :: Word8 -> Ch
+pattern C n <- ((fromIntegral . unCh) -> n)
+  where C w8 = w8toCh (Just w8)
+{-# COMPLETE C, EOI #-}
+
+w8toCh :: Maybe Word8 -> Ch
+w8toCh (Just x) = Ch (fromIntegral x)
+w8toCh Nothing = eof
+
+chToMaybe :: Ch -> Maybe Word8
+chToMaybe EOI = Nothing
+chToMaybe (C x) = Just x
+
+packCh :: [Ch] -> ByteString
+packCh xs = BS.pack $ catMaybes (mapCh <$> xs)
+  where
+    mapCh EOI = Nothing
+    mapCh (Ch x) = Just $ fromIntegral x
+
 -- read character relative to focus (0 returns the focus)
-peekChar :: Int -> Parser e (Maybe Word8)
-peekChar i = Parser \p@ParserState { position, buffer } -> Right (buffer !? (position + i), p)
+peekChar :: Int -> Parser e Ch
+peekChar i = Parser \p@ParserState { position, buffer } -> Right (w8toCh (buffer !? (position + i)), p)
 
 -- the the current focus of the parser
 getPos :: Parser e Int
@@ -88,8 +128,9 @@ isDone = Parser \p@ParserState { position, len } -> Right (position >= len, p)
 parseFixedBS :: ByteString -> Parser () ()
 parseFixedBS needle = do
   let len = BS.length needle
-  cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..(len - 1)]
-  if Right needle == (BS.pack <$> cs)
+  cs <- traverse peekChar [0..(len - 1)]
+  -- cs <- runExceptT $ traverse (\i -> ExceptT $ (maybe (Left ()) Right <$> peekChar i)) [0..(len - 1)]
+  if needle == packCh cs
   then moveFocus len
   else failParse ()
 
@@ -102,9 +143,9 @@ parseWord8 :: Word8 -> Parser SmallErr ()
 parseWord8 c = do
   c' <- peekChar 0
   case c' of
-    Just x | x == c -> () <$ moveFocus 1
-    Just x | otherwise -> failParse UnexpectedInput
-    Nothing -> failParse Eof
+    C a | a == c -> () <$ moveFocus 1
+    C x -> failParse UnexpectedInput
+    EOI -> failParse Eof
 
 replaceError :: e' -> Parser e a -> Parser e' a
 replaceError e x = mapError (\_ -> e) x 
@@ -122,22 +163,22 @@ alt :: Parser e1 a -> Parser e2 a -> Parser e2 a
 alt (Parser p1) (Parser p2) = Parser \s -> either (\e -> p2 s) Right $ p1 s
 
 -- broken - use parseSpan instead
-parseWhile :: (Maybe Word8 -> Bool) -> Parser () ByteString
-parseWhile f = do
-  (i, chars) <- loopM fn (0, [])
-  moveFocus i
-  pure $ BS.pack $ catMaybes $ reverse chars
-  where
-    fn (i, cs) = do
-      c <- peekChar i
-      pure $ if f c
-      then Left (i + 1, c:cs)
-      else Right (i - 1, cs)
+-- parseWhile :: (Maybe Word8 -> Bool) -> Parser () ByteString
+-- parseWhile f = do
+--   (i, chars) <- loopM fn (0, [])
+--   moveFocus i
+--   pure $ BS.pack $ catMaybes $ reverse chars
+--   where
+--     fn (i, cs) = do
+--       c <- peekChar i
+--       pure $ if f c
+--       then Left (i + 1, c:cs)
+--       else Right (i - 1, cs)
   
 parseSpan :: (Word8 -> Bool) -> Parser Void [Word8]
 parseSpan predicate = do
   r <- peekChar 0
-  case r of
+  case chToMaybe r of
     Just c | predicate c -> (c :) <$> (moveFocus 1 >> parseSpan predicate)
     _ -> pure []
 
@@ -149,17 +190,18 @@ loopM act x = do
         Left x -> loopM act x
         Right v -> pure v
 
+loop :: (a -> Either a b) -> a -> b
+loop f x = runIdentity $ loopM (pure . f) x
+
 parseNewLine :: Parser () ()
 parseNewLine = do
   c1 <- peekChar 0
-  case c1 of
-    Just 0x0A -> moveFocus 1
-    Just 0x0D -> do
-      c2 <- peekChar 1
-      case c2 of
-        Just 0x0A -> moveFocus 2
-        _ -> failParse ()
-    _ -> failParse ()
+  c2 <- peekChar 1
+  case (c1, c2) of
+    (C 0x0A, _) -> moveFocus 1
+    (C 0x0D, C 0x0A) -> moveFocus 2
+    (C 0x0D, _) -> failParse ()
+    (_,_) -> failParse ()
 
 eitherToParser :: Either e a -> Parser e a
 eitherToParser x = Parser \p -> (,p) <$> x
@@ -167,7 +209,7 @@ eitherToParser x = Parser \p -> (,p) <$> x
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 (<&>) = flip fmap
 
-data Span = Span { start :: Int, end :: Int, source :: FilePath }
+data Span = Span { start :: Int, end :: Int, source :: FilePath } deriving Eq
 
 instance Show Span where
   show (Span s e src) = "..." <> ":[" <> show s <> ".." <> show e <> "]"
@@ -184,3 +226,5 @@ instance Show a => Show (Located a) where
   show (Located loc v) = "(" <> show v <> ")@[" <> show loc <> "]"
 
 instance Eq a => Eq (Located a) where
+  (Located l1 v1) == (Located l2 v2) = l1 == l2 && v1 == v2
+

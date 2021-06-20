@@ -7,7 +7,8 @@ import Parser
 import Lib
 
 import Data.ByteString (ByteString)
-import Data.Text (Text, unpack)
+import Data.Text (Text, unpack, pack)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
@@ -29,14 +30,23 @@ data Node
 
 data HtmlError = HtmlError_001 deriving (Eq, Show)
 
-innerText :: Html -> Text
-innerText = innerTextHtml
-  where
-    innerTextHtml (HtmlNode (Located _ node)) = innerTextNode node
-    innerTextHtml (HtmlSeq xs) = foldMap innerText xs
+data InnerText = InnerText Text deriving Show
 
-    innerTextNode (TextNode bs) = decodeUtf8 bs
-    innerTextNode (Element _ html) = innerText html
+innerText :: Html -> [Located InnerText]
+innerText = go
+  where
+    go (HtmlNode (Located loc (TextNode bs))) = [Located loc (InnerText (decodeUtf8 bs))]
+    go (HtmlNode (Located loc (Element _ html))) = go html
+    go (HtmlSeq xs) = foldMap go xs
+
+-- innerText :: Html -> Text
+-- innerText = innerTextHtml
+--   where
+--     innerTextHtml (HtmlNode (Located _ node)) = innerTextNode node
+--     innerTextHtml (HtmlSeq xs) = foldMap innerText xs
+-- 
+--     innerTextNode (TextNode bs) = decodeUtf8 bs
+--     innerTextNode (Element _ html) = innerText html
 
 printTree :: Html -> IO ()
 printTree = printTree' ""
@@ -89,36 +99,37 @@ parseHtml_ ctx = do
     Nothing -> do
       c <- peekChar 0
       case c of
-        Just x | x == c2w '<' -> do
+        C x | x == c2w '<' -> do
           c2 <- peekChar 1
           case c2 of
-            Nothing -> failParse (Err_03 HtmlError_001)
-            Just x | x == c2w '/' -> parseClosingTag
-            Just x | otherwise -> replaceError (Err_03 HtmlError_001) $ parseTag
-        _ -> replaceError (Err_03 HtmlError_001) $ parseText []
+            EOI -> failParse (Err_03 HtmlError_001)
+            C x | x == c2w '/' -> parseClosingTag
+            C x | otherwise -> replaceError (Err_03 HtmlError_001) $ parseTag
+        _ -> replaceError (Err_03 HtmlError_001) parseText
 
   where
-    parseText acc = do
-      parserLog "parseText"
-      parseText' acc
-
-    parseText' acc = do
+    parseText = do
+      i0 <- getPos
       let
-        ((HtmlOpenTag n i cacc):ctx') = ctx
-        ctx'' :: Span -> [HtmlOpenTag]
-        ctx'' span = (HtmlOpenTag n i (cacc <> [HtmlNode $ Located (span { start = i }) $ TextNode $ BS.pack $ reverse acc])):ctx'
-        terminateText = do
-          span <- genSpan
-          parseHtml_ (ctx'' span)
-      nl <- peek (parseNewLine >> parseNewLine)
-      case nl of
-        Just _ -> terminateText
-        Nothing -> do
-          c0 <- peekChar 0
-          case c0 of
-            Nothing -> failParse (Err_03 HtmlError_001)
-            Just x | x == 60 -> terminateText
-            Just x | otherwise -> moveFocus 1 >> parseText' (x:acc)
+        parseText' acc = do
+          let
+            ((HtmlOpenTag n i cacc):ctx') = ctx
+            ctx'' :: Span -> [HtmlOpenTag]
+            ctx'' span = (HtmlOpenTag n i (cacc <> [HtmlNode $ Located (span { start = i0 }) $ TextNode $ BS.pack $ reverse acc])):ctx'
+            terminateText = do
+              span <- genSpan
+              parseHtml_ (ctx'' span)
+          nl <- peek (parseNewLine >> parseNewLine)
+          case nl of
+            Just _ -> terminateText
+            Nothing -> do
+              c0 <- peekChar 0
+              case c0 of
+                EOI -> failParse (Err_03 HtmlError_001)
+                C 60 -> terminateText
+                C x -> moveFocus 1 >> parseText' (x:acc)
+      parserLog "parseText"
+      parseText' []
 
     parseTag = do
       sOffset <- getPos

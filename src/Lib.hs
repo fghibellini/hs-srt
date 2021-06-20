@@ -144,17 +144,15 @@ instance SubRipContent RawLine where
         r3 <- peekChar (i + 2)
         r4 <- peekChar (i + 3)
         pure $ case (r1,r2) of
-          (a,_) | isLF a -> case (r2,r3) of
-            (x,_) | isLF x -> True
-            (x,y) | isCR x && isLF y -> True
+          (LF,_) -> case (r2,r3) of
+            (LF,_) -> True
+            (CR,LF) -> True
             _ -> False
-          (a,b) | isCR a && isLF b -> case (r3,r4) of
-            (x,_) | isLF x -> True
-            (x,y) | isCR x && isLF y -> True
+          (CR,LF) -> case (r3,r4) of
+            (LF,_) -> True
+            (CR,LF) -> True
             _ -> False
           _ -> False
-      isLF i = i == Just 0x0A
-      isCR i = i == Just 0x0D
 
 -- same as `loop` from `extra`
 unfold :: (a -> Either b a) -> a -> b
@@ -197,9 +195,9 @@ parseFixedDigitNumber n = do
   where
     parseDigits :: Parser a (Either SmallErr [Word8])
     parseDigits = runExceptT $ for [0..(n-1)] \i -> lift (peekChar i) >>= \case 
-      (Just c) | isDigit c -> pure c
-      (Just c) | otherwise -> throwE UnexpectedInput
-      Nothing -> throwE Eof
+      C c | isDigit c -> pure c
+      C c | otherwise -> throwE UnexpectedInput
+      EOI -> throwE Eof
 
 -- flip unfold 0 \i -> case i of
 --        _ | i >= n -> Left(Right (digitsToInt (BS.take i input), BS.drop i input))
