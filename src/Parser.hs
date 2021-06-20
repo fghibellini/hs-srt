@@ -7,6 +7,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Parser where
 
@@ -220,7 +221,9 @@ instance Show Span where
 genSpan :: Parser e Span
 genSpan = Parser \p@ParserState { position, filename } -> Right (Span { start = position, end = position, source = filename }, p)
 
-data Located a = Located { location :: Span, value :: a }
+data Located a = Located { location :: Span, value :: a } deriving Functor
+
+
 
 instance Show a => Show (Located a) where
   show (Located loc v) = "(" <> show v <> ")@[" <> show loc <> "]"

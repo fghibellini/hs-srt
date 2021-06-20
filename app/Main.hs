@@ -21,16 +21,14 @@ removeUnwantedChars = T.replace ")" " " . T.replace "(" " " . T.replace "!" " " 
 removeUnwantedWords :: [Text] -> [Text]
 removeUnwantedWords = filter (/= "-")
 
-newtype InnerTextWord = InnerTextWord { unInnerTextWord :: Text } deriving Show
-
-htmlWords :: Html -> [Located InnerTextWord]
+htmlWords :: Html -> [Located Text]
 htmlWords input = foldMap mapWords $ innerText input
   where
-    mapWords :: Located InnerText -> [Located InnerTextWord] 
+    mapWords :: Located InnerText -> [Located Text] 
     mapWords (Located spanLoc (InnerText text)) =
       let
-        f (acc, i) word = (acc <> if T.all isSpace word then [] else [Located (spanLoc { start = i, end = i + T.length word - 1 }) (InnerTextWord word)], i + T.length word)
-        recomputeLocations :: [Text] -> [Located InnerTextWord]
+        f (acc, i) word = (acc <> if T.all isSpace word then [] else [Located (spanLoc { start = i, end = i + T.length word - 1 }) word], i + T.length word)
+        recomputeLocations :: [Text] -> [Located Text]
         recomputeLocations words = fst $ foldl f ([], start spanLoc) words
       in recomputeLocations $ sections text -- TODO compute location
     
@@ -48,30 +46,33 @@ htmlWords input = foldMap mapWords $ innerText input
     isSpace c = ' ' == c
 
 
+parseHtmlWords :: SubRip Html -> [Located Text]
+parseHtmlWords = concatMap lineWords . Lib.lines
+  where
+    lineWords = htmlWords . value . contents
+
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [f] -> do
-      subs <- ((parse f) :: IO (SubRip Html))
-      putStrLn "DONE!"
-      -- let
-      --   textLines :: [Text]
-      --   textLines = ((innerText . value . contents) <$> Lib.lines subs)
-      --   words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
-      putStrLn "SUBS:"
-      -- print subs
-      for_ (Lib.lines subs) $ \line -> printTree (value (contents line))
-      putStrLn "WORDS:"
-      for_ (Lib.lines subs) $ \line -> do
-         -- let ws = unInnerTextWord . value <$> Html.words (value (contents line))
-         let ws = htmlWords (value (contents line))
-         
-         for_ ws print 
-      --putStrLn "WORDS:"
-      --for_ words \line -> putStrLn $ unpack line
+    [] -> do
+      error ("Invalid number of arguments (expected >0, got 0)")
     xs -> do
-      error ("Invalid number of arguments (expected 1, got " <> show (length xs) <> ")")
+      pure ()
+      -- subs <- ((parse f) :: IO (SubRip Html))
+      -- putStrLn "DONE!"
+      -- -- let
+      -- --   textLines :: [Text]
+      -- --   textLines = ((innerText . value . contents) <$> Lib.lines subs)
+      -- --   words = removeUnwantedWords $ T.toLower <$> (T.words $ removeUnwantedChars $ T.unwords textLines)
+      -- putStrLn "SUBS:"
+      -- -- print subs
+      -- for_ (Lib.lines subs) $ \line -> printTree (value (contents line))
+      -- putStrLn "WORDS:"
+      -- for_ (parseHtmlWords subs) $ \word -> do
+      --    print word
+      -- --putStrLn "WORDS:"
+      -- --for_ words \line -> putStrLn $ unpack line
 
 -- main :: IO ()
 -- main = do
